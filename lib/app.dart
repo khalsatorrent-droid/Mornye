@@ -11,6 +11,7 @@ import 'package:mornye/screens/tutorial_screen.dart';
 import 'package:mornye/screens/whats_new_screen.dart';
 import 'package:mornye/providers/settings_provider.dart';
 import 'package:mornye/providers/equalizer_provider.dart';
+import 'package:mornye/services/stremio/stremio_addon_controller.dart';
 import 'package:mornye/services/app_navigation_service.dart';
 import 'package:mornye/services/app_orientation.dart';
 import 'package:mornye/services/link/client/link_client_controller.dart';
@@ -258,6 +259,8 @@ class MornyeApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // Keeps the equalizer loaded for the app's lifetime without rebuilding.
     ref.listen(equalizerProvider, (_, _) {});
+    // Runs the Stremio add-on server for as long as it is enabled.
+    ref.listen(stremioAddonControllerProvider, (_, _) {});
     // On phones, keeps the link to a paired computer, its sync and the
     // remote control features running.
     if (ref.read(linkClientSupportedProvider)) {

@@ -223,6 +223,19 @@
 
 ---
 
+## Stremio add-on
+
+Mornye can serve its catalogue to [Stremio](https://www.stremio.com/) on your
+local network. Turn it on under **Settings → Stremio add-on**, then install
+`http://<your-ip>:8089/manifest.json` in Stremio. Stremio browses the same
+providers the app uses, lists every download source you have enabled, and plays
+tracks by downloading them into your library and streaming the file from there.
+
+See [docs/stremio-addon.md](docs/stremio-addon.md) for setup, the catalogs it
+offers, the endpoints it serves and its limitations.
+
+---
+
 ## <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/sections/section-development-dark.svg"><img src="assets/readme/sections/section-development-light.svg" height="32" align="top" alt=""></picture> Development
 
 Mornye combines a Flutter/Dart UI, a Rust backend from
