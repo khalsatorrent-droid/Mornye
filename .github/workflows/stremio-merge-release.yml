@@ -1,0 +1,104 @@
+name: Stremio add-on — merge and release
+
+# One push to `feat/stremio-addon` is the trigger: this run merges the branch
+# into main, moves the release tag, publishes the release notes and then asks
+# the existing Release workflow to build and attach the binaries.
+#
+# The tag is pushed with GITHUB_TOKEN, and GitHub does not start workflows from
+# events caused by that token, so the Release workflow is dispatched explicitly
+# instead of relying on the tag push.
+
+on:
+  push:
+    branches:
+      - feat/stremio-addon
+  workflow_dispatch:
+    inputs:
+      merge_to_main:
+        description: "Merge the branch into main before releasing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: stremio-merge-release
+  cancel-in-progress: false
+
+env:
+  BRANCH: feat/stremio-addon
+  MAIN: main
+  VERSION: v5.3.1-stremio
+
+jobs:
+  merge-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.MAIN }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge the branch into main
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.merge_to_main }}
+        run: |
+          git fetch origin "$BRANCH"
+          if git merge-base --is-ancestor "origin/$BRANCH" HEAD; then
+            echo "main already contains $BRANCH; nothing to merge."
+            exit 0
+          fi
+          git merge --no-ff "origin/$BRANCH" \
+            -m "Merge branch '$BRANCH': Stremio add-on"
+          git push origin "HEAD:$MAIN"
+
+      - name: Move the release tag
+        run: |
+          git fetch --tags --force origin
+          git tag -fa "$VERSION" -m "Mornye 5.3.1 + Stremio add-on" HEAD
+          git push origin "refs/tags/$VERSION" --force
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release edit "$VERSION" \
+              --title "Mornye 5.3.1 + Stremio add-on" \
+              --notes-file docs/stremio-addon-release-notes.md
+          else
+            gh release create "$VERSION" \
+              --title "Mornye 5.3.1 + Stremio add-on" \
+              --notes-file docs/stremio-addon-release-notes.md \
+              --prerelease
+          fi
+
+      # The Release workflow needs this repository's secrets (signing keys, the
+      # Discord SDK passphrase). Without them its build jobs fail and the
+      # release stays source-only, which is why the notes are published first.
+      - name: Ask the Release workflow to attach binaries
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run release.yml \
+            --ref "$MAIN" \
+            -f version="$VERSION" \
+            -f desktop=false
+
+      - name: Summary
+        run: |
+          {
+            echo "### Stremio add-on"
+            echo
+            echo "- Branch \`$BRANCH\` merged into \`$MAIN\`"
+            echo "- Tag \`$VERSION\` published"
+            echo "- Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/$VERSION"
+          } >> "$GITHUB_STEP_SUMMARY"
