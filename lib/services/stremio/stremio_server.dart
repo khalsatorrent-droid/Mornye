@@ -316,9 +316,10 @@ class StremioAddonServer {
     if (host != null && host.trim().isNotEmpty) {
       return 'http://${host.trim()}';
     }
-    final info = request.connectionInfo;
-    final address = info?.localAddress.address ?? '127.0.0.1';
-    return 'http://$address:${info?.localPort ?? port}';
+    // HttpConnectionInfo only exposes the local port, not the local address;
+    // Stremio always sends a Host header, so this is a last resort.
+    final localPort = request.connectionInfo?.localPort ?? port;
+    return 'http://127.0.0.1:$localPort';
   }
 
   Future<void> _json(
