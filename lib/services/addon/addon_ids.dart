@@ -1,16 +1,17 @@
 import 'dart:convert';
 
-/// Item ids handed to Stremio, and the reverse mapping back to Mornye data.
+/// Item ids handed to Eclipse, and the reverse mapping back to Mornye data.
 ///
-/// Stremio stores ids for "continue watching", so they must be stable across
-/// restarts. Every id is `mny:<kind>:<base64url part>[.<base64url part>]`:
+/// Eclipse passes an id back verbatim to `/stream`, `/album`, `/artist` or
+/// `/playlist`, so an id has to carry everything the handler needs:
+/// `mny:<kind>:<base64url part>[.<base64url part>]`.
 ///
 /// * `mny:t:<source>.<trackId>` – a catalogue track
 /// * `mny:a:<source>.<albumId>` – an album
 /// * `mny:r:<source>.<artistId>` – an artist
 /// * `mny:p:<source>.<playlistId>` – a playlist
 /// * `mny:l:<libraryRowId>` – a file already in the library
-abstract final class StremioIds {
+abstract final class AddonIds {
   static const String prefix = 'mny:';
 
   static const String trackKind = 't';
@@ -41,7 +42,7 @@ abstract final class StremioIds {
 
   static String library(String rowId) => encodeSingle(libraryKind, rowId);
 
-  static StremioIdRef? parse(String id) {
+  static AddonIdRef? parse(String id) {
     final trimmed = id.trim();
     if (!trimmed.startsWith(prefix)) return null;
     final body = trimmed.substring(prefix.length);
@@ -56,7 +57,7 @@ abstract final class StremioIds {
       parts.add(decoded);
     }
     if (parts.isEmpty) return null;
-    return StremioIdRef(kind: kind, parts: List.unmodifiable(parts));
+    return AddonIdRef(kind: kind, parts: List.unmodifiable(parts));
   }
 
   static String _encode(String value) =>
@@ -73,8 +74,8 @@ abstract final class StremioIds {
   }
 }
 
-class StremioIdRef {
-  const StremioIdRef({required this.kind, required this.parts});
+class AddonIdRef {
+  const AddonIdRef({required this.kind, required this.parts});
 
   final String kind;
   final List<String> parts;
@@ -82,9 +83,9 @@ class StremioIdRef {
   String get source => parts.length > 1 ? parts[0] : '';
   String get value => parts.length > 1 ? parts[1] : parts[0];
 
-  bool get isTrack => kind == StremioIds.trackKind;
-  bool get isAlbum => kind == StremioIds.albumKind;
-  bool get isArtist => kind == StremioIds.artistKind;
-  bool get isPlaylist => kind == StremioIds.playlistKind;
-  bool get isLibrary => kind == StremioIds.libraryKind;
+  bool get isTrack => kind == AddonIds.trackKind;
+  bool get isAlbum => kind == AddonIds.albumKind;
+  bool get isArtist => kind == AddonIds.artistKind;
+  bool get isPlaylist => kind == AddonIds.playlistKind;
+  bool get isLibrary => kind == AddonIds.libraryKind;
 }

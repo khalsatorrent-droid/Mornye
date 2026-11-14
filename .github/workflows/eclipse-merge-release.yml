@@ -1,6 +1,6 @@
-name: Stremio add-on — merge and release
+name: Eclipse add-on — merge and release
 
-# One push to `feat/stremio-addon` is the trigger: this run merges the branch
+# One push to `feat/eclipse-addon` is the trigger: this run merges the branch
 # into main, moves the release tag, publishes the release notes and then asks
 # the existing Release workflow to build and attach the binaries.
 #
@@ -11,7 +11,7 @@ name: Stremio add-on — merge and release
 on:
   push:
     branches:
-      - feat/stremio-addon
+      - feat/eclipse-addon
   workflow_dispatch:
     inputs:
       merge_to_main:
@@ -24,13 +24,13 @@ permissions:
   actions: write
 
 concurrency:
-  group: stremio-merge-release
+  group: eclipse-merge-release
   cancel-in-progress: false
 
 env:
-  BRANCH: feat/stremio-addon
+  BRANCH: feat/eclipse-addon
   MAIN: main
-  VERSION: v5.3.1-stremio
+  VERSION: v5.3.1-eclipse
 
 jobs:
   merge-and-release:
@@ -55,14 +55,16 @@ jobs:
             echo "main already contains $BRANCH; nothing to merge."
             exit 0
           fi
+          # main may have moved since the checkout; rebase onto it before pushing.
+          git pull --rebase origin "$MAIN"
           git merge --no-ff "origin/$BRANCH" \
-            -m "Merge branch '$BRANCH': Stremio add-on"
+            -m "Merge branch '$BRANCH': Eclipse add-on"
           git push origin "HEAD:$MAIN"
 
       - name: Move the release tag
         run: |
           git fetch --tags --force origin
-          git tag -fa "$VERSION" -m "Mornye 5.3.1 + Stremio add-on" HEAD
+          git tag -fa "$VERSION" -m "Mornye 5.3.1 + Eclipse add-on" HEAD
           git push origin "refs/tags/$VERSION" --force
 
       - name: Publish the release
@@ -71,12 +73,12 @@ jobs:
         run: |
           if gh release view "$VERSION" >/dev/null 2>&1; then
             gh release edit "$VERSION" \
-              --title "Mornye 5.3.1 + Stremio add-on" \
-              --notes-file docs/stremio-addon-release-notes.md
+              --title "Mornye 5.3.1 + Eclipse add-on" \
+              --notes-file docs/eclipse-addon-release-notes.md
           else
             gh release create "$VERSION" \
-              --title "Mornye 5.3.1 + Stremio add-on" \
-              --notes-file docs/stremio-addon-release-notes.md \
+              --title "Mornye 5.3.1 + Eclipse add-on" \
+              --notes-file docs/eclipse-addon-release-notes.md \
               --prerelease
           fi
 
@@ -96,7 +98,7 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "### Stremio add-on"
+            echo "### Eclipse add-on"
             echo
             echo "- Branch \`$BRANCH\` merged into \`$MAIN\`"
             echo "- Tag \`$VERSION\` published"

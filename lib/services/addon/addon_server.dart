@@ -4,29 +4,28 @@ import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mornye/constants/app_info.dart';
+import 'package:mornye/services/addon/addon_catalog_service.dart';
+import 'package:mornye/services/addon/addon_playback_service.dart';
 import 'package:mornye/services/library_database.dart';
 import 'package:mornye/services/local_network_access.dart';
-import 'package:mornye/services/stremio/stremio_catalog_service.dart';
-import 'package:mornye/services/stremio/stremio_ids.dart';
-import 'package:mornye/services/stremio/stremio_stream_service.dart';
 import 'package:mornye/utils/logger.dart';
 
-final _log = AppLogger('StremioServer');
+final _log = AppLogger('AddonServer');
 
-/// Serves the Stremio add-on over the local network.
+/// Serves the Eclipse add-on over the local network.
 ///
-/// The add-on speaks the plain Stremio protocol on one port: `manifest.json`,
-/// `catalog`, `meta` and `stream`, plus `/play` for the audio itself and
-/// `/cover` for library artwork. Catalogues and downloads go through the app's
-/// own providers, so nothing is fetched behind its back.
-class StremioAddonServer {
-  StremioAddonServer({required Ref ref, required this.port})
-    : _catalog = StremioCatalogService(ref),
-      _streams = StremioStreamService(ref);
+/// Eclipse installs an add-on from its manifest URL and then calls `/search`,
+/// `/stream`, the optional detail endpoints and any catalog rows. Every answer
+/// comes from the app's own providers, downloads and library, so the add-on
+/// shows what the app shows.
+class AddonServer {
+  AddonServer({required Ref ref, required this.port})
+    : _catalog = AddonCatalogService(ref),
+      _playback = AddonPlaybackService(ref);
 
   final int port;
-  final StremioCatalogService _catalog;
-  final StremioStreamService _streams;
+  final AddonCatalogService _catalog;
+  final AddonPlaybackService _playback;
 
   HttpServer? _server;
   StreamSubscription<HttpRequest>? _subscription;
@@ -54,7 +53,7 @@ class StremioAddonServer {
       onError: (Object error) => _log.w('Server error: $error'),
       cancelOnError: false,
     );
-    _log.i('Stremio add-on listening on port $port');
+    _log.i('Eclipse add-on listening on port $port');
   }
 
   Future<void> stop() async {
@@ -69,7 +68,7 @@ class StremioAddonServer {
     } catch (error) {
       _log.w('Could not close the add-on server: $error');
     }
-    _log.i('Stremio add-on stopped');
+    _log.i('Eclipse add-on stopped');
   }
 
   // --- Routing ------------------------------------------------------------
@@ -94,14 +93,26 @@ class StremioAddonServer {
         case 'manifest.json':
           await _json(request, _manifest());
           return;
-        case 'catalog':
-          await _handleCatalog(request, segments);
-          return;
-        case 'meta':
-          await _handleMeta(request, segments);
+        case 'search':
+          final query = request.uri.queryParameters['q'] ?? '';
+          await _json(request, await _catalog.search(query));
           return;
         case 'stream':
           await _handleStream(request, segments);
+          return;
+        case 'album':
+          await _handleDetail(request, segments, _catalog.album);
+          return;
+        case 'artist':
+          await _handleDetail(request, segments, _catalog.artist);
+          return;
+        case 'playlist':
+          await _handleDetail(request, segments, _catalog.playlist);
+          return;
+        case 'catalog':
+          final id = segments.length > 1 ? segments[1] : '';
+          final skip = int.tryParse(request.uri.queryParameters['skip'] ?? '');
+          await _json(request, await _catalog.catalogRow(id, skip ?? 0));
           return;
         case 'play':
           await _handlePlay(request, segments);
@@ -127,84 +138,51 @@ class StremioAddonServer {
   }
 
   Map<String, dynamic> _manifest() => {
-    'id': 'org.mornye.stremio.music',
+    'id': 'org.mornye.eclipse.addon',
+    'name': 'Mornye',
     'version': AppInfo.version,
-    'name': 'Mornye Music',
     'description':
-        'Your Mornye catalogue in Stremio. Browse the same providers the app '
-        'uses, pick a download source, and the track is saved to your library '
-        'and streamed from there.',
-    'types': ['movie'],
-    'resources': [
-      'catalog',
-      {
-        'name': 'meta',
-        'types': ['movie'],
-        'idPrefixes': [StremioIds.prefix],
-      },
-      {
-        'name': 'stream',
-        'types': ['movie'],
-        'idPrefixes': [StremioIds.prefix],
-      },
-    ],
-    'catalogs': StremioCatalogService.catalogDescriptors(),
-    'behaviorHints': {'configurable': false},
+        'Your Mornye catalogue in Eclipse. Browse the same providers the app '
+        'uses, and each track is downloaded into your library and streamed '
+        'from there.',
+    'resources': ['search', 'stream', 'catalog'],
+    'types': ['track', 'album', 'artist', 'playlist'],
+    'contentType': 'music',
+    'catalogs': AddonCatalogService.catalogDescriptors(),
   };
 
-  Future<void> _handleCatalog(
-    HttpRequest request,
-    List<String> segments,
-  ) async {
-    if (segments.length < 3) {
-      await _json(request, {'metas': []});
-      return;
-    }
-    final tail = segments.sublist(2).join('/');
-    final slash = tail.indexOf('/');
-    var catalogId = slash == -1 ? tail : tail.substring(0, slash);
-    var extra = slash == -1 ? '' : tail.substring(slash + 1);
-    catalogId = _stripJson(catalogId);
-    extra = _stripJson(extra);
-
-    final params = <String, String>{
-      ...request.uri.queryParameters,
-      ..._parseExtra(extra),
-    };
-    final search = params['search'] ?? params['q'];
-    final skip = int.tryParse(params['skip'] ?? '') ?? 0;
-
-    final payload = await _catalog.catalog(
-      catalogId: catalogId,
-      baseUrl: _baseUrl(request),
-      search: search,
-      skip: skip,
-    );
-    await _json(request, payload);
-  }
-
-  Future<void> _handleMeta(HttpRequest request, List<String> segments) async {
-    if (segments.length < 3) {
+  Future<void> _handleStream(HttpRequest request, List<String> segments) async {
+    if (segments.length < 2) {
       await _json(request, {'error': 'not found'}, status: 404);
       return;
     }
-    final id = _stripJson(segments.sublist(2).join('/'));
-    final payload = await _catalog.meta(id: id, baseUrl: _baseUrl(request));
+    final id = segments[1];
+    try {
+      final info = await _playback.streamInfo(
+        id: id,
+        baseUrl: _baseUrl(request),
+      );
+      await _json(request, info);
+    } on AddonPlaybackException catch (error) {
+      await _json(request, {'error': error.message}, status: 404);
+    }
+  }
+
+  Future<void> _handleDetail(
+    HttpRequest request,
+    List<String> segments,
+    Future<Map<String, dynamic>?> Function(String id) load,
+  ) async {
+    if (segments.length < 2) {
+      await _json(request, {'error': 'not found'}, status: 404);
+      return;
+    }
+    final payload = await load(segments[1]);
     if (payload == null) {
-      await _json(request, {'meta': null}, status: 404);
+      await _json(request, {'error': 'not found'}, status: 404);
       return;
     }
     await _json(request, payload);
-  }
-
-  Future<void> _handleStream(HttpRequest request, List<String> segments) async {
-    if (segments.length < 3) {
-      await _json(request, {'streams': []});
-      return;
-    }
-    final id = _stripJson(segments.sublist(2).join('/'));
-    final streams = await _streams.streams(id: id, baseUrl: _baseUrl(request));
-    await _json(request, {'streams': streams});
   }
 
   Future<void> _handlePlay(HttpRequest request, List<String> segments) async {
@@ -213,18 +191,9 @@ class StremioAddonServer {
       return;
     }
     final id = segments[1];
-    final params = request.uri.queryParameters;
-    final mode = (params['m'] ?? 'dl').toLowerCase();
-    final service = params['s'] ?? '';
-    final quality = params['q'] ?? '';
 
     try {
-      final handle = await _streams.beginPlay(
-        id: id,
-        mode: mode,
-        service: service,
-        quality: quality,
-      );
+      final handle = await _playback.beginPlay(id);
       final ready = handle.readyFile;
       if (ready != null) {
         await _serveFile(request, ready);
@@ -237,7 +206,7 @@ class StremioAddonServer {
         return;
       }
       await _serveFile(request, await handle.waitForFile());
-    } on StremioPlaybackException catch (error) {
+    } on AddonPlaybackException catch (error) {
       await _json(request, {'error': error.message}, status: 502);
     }
   }
@@ -265,7 +234,6 @@ class StremioAddonServer {
   Future<void> _serveLanding(HttpRequest request) async {
     final baseUrl = _baseUrl(request);
     final manifestUrl = '$baseUrl/manifest.json';
-    final installUrl = manifestUrl.replaceFirst('http', 'stremio');
     final response = request.response;
     response.statusCode = HttpStatus.ok;
     response.headers.set(
@@ -279,7 +247,7 @@ class StremioAddonServer {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mornye Music · Stremio add-on</title>
+<title>Mornye · Eclipse add-on</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 0; padding: 40px 20px;
          background: #101014; color: #f3f3f5; }
@@ -288,18 +256,15 @@ class StremioAddonServer {
   p { color: #b9b9c2; line-height: 1.55; }
   code { background: #1d1d24; padding: 3px 6px; border-radius: 6px;
          word-break: break-all; }
-  a.button { display: inline-block; margin: 18px 0; padding: 12px 20px;
-             border-radius: 999px; background: #7c5cff; color: #fff;
-             text-decoration: none; font-weight: 600; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Mornye Music</h1>
-  <p>The add-on is running. Install it in Stremio, or paste the manifest URL
-  into <em>Add-ons → Install from URL</em>.</p>
+  <h1>Mornye</h1>
+  <p>The add-on is running. In Eclipse Music open
+  <em>Settings → Connections → Add Connection → Addon</em> and paste this
+  manifest URL.</p>
   <p><code>$manifestUrl</code></p>
-  <a class="button" href="$installUrl">Install in Stremio</a>
   <p>Both devices must be on the same network. Keep Mornye open while you
   stream: the app resolves the download and serves the file.</p>
 </main>
@@ -317,7 +282,7 @@ class StremioAddonServer {
       return 'http://${host.trim()}';
     }
     // HttpConnectionInfo only exposes the local port, not the local address;
-    // Stremio always sends a Host header, so this is a last resort.
+    // Eclipse always sends a Host header, so this is a last resort.
     final localPort = request.connectionInfo?.localPort ?? port;
     return 'http://127.0.0.1:$localPort';
   }
@@ -413,7 +378,7 @@ class StremioAddonServer {
   /// not known yet; once the library file exists it is served with ranges.
   Future<void> _serveGrowing(
     HttpRequest request,
-    StremioPlayHandle handle,
+    AddonPlayHandle handle,
     File initial,
   ) async {
     final response = request.response;
@@ -432,7 +397,7 @@ class StremioAddonServer {
 
     var current = initial;
     var offset = 0;
-    final deadline = DateTime.now().add(StremioStreamService.downloadTimeout);
+    final deadline = DateTime.now().add(AddonPlaybackService.downloadTimeout);
     try {
       while (true) {
         var length = 0;
@@ -486,28 +451,6 @@ class StremioAddonServer {
     );
   }
 
-  static String _stripJson(String value) {
-    final trimmed = value.trim();
-    return trimmed.toLowerCase().endsWith('.json')
-        ? trimmed.substring(0, trimmed.length - 5)
-        : trimmed;
-  }
-
-  static Map<String, String> _parseExtra(String extra) {
-    final value = extra.trim();
-    if (value.isEmpty) return const {};
-    final result = <String, String>{};
-    for (final pair in value.split('&')) {
-      if (pair.isEmpty) continue;
-      final equals = pair.indexOf('=');
-      if (equals <= 0) continue;
-      final key = Uri.decodeComponent(pair.substring(0, equals));
-      final raw = pair.substring(equals + 1);
-      result[key] = Uri.decodeComponent(raw.replaceAll('+', ' '));
-    }
-    return result;
-  }
-
   static String _mimeType(String path) {
     final dot = path.lastIndexOf('.');
     final extension = dot == -1 ? '' : path.substring(dot + 1).toLowerCase();
@@ -527,7 +470,7 @@ class StremioAddonServer {
 }
 
 /// The addresses other devices on the network can use to reach [port].
-Future<List<String>> stremioLanUrls(int port) async {
+Future<List<String>> addonLanUrls(int port) async {
   final addresses = <String>[];
   try {
     final interfaces = await NetworkInterface.list(

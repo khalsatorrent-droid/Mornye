@@ -1,4 +1,4 @@
-name: Stremio add-on — build APK
+name: Eclipse add-on — build APK
 
 # Builds a Lite Android release APK for this fork and attaches it to the
 # release. The upstream Release workflow needs the Discord SDK passphrase and
@@ -17,13 +17,13 @@ on:
       tag:
         description: "Release tag to attach the APKs to"
         required: false
-        default: "v5.3.1-stremio"
+        default: "v5.3.1-eclipse"
 
 permissions:
   contents: write
 
 concurrency:
-  group: stremio-fork-apk
+  group: eclipse-fork-apk
   cancel-in-progress: true
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MORNYE_DISCORD_SDK: "0"
-      RELEASE_TAG: ${{ inputs.tag || 'v5.3.1-stremio' }}
+      RELEASE_TAG: ${{ inputs.tag || 'v5.3.1-eclipse' }}
     steps:
       - name: Free disk space
         run: |

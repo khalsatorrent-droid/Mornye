@@ -26,7 +26,7 @@ import 'package:mornye/screens/settings/log_screen.dart';
 import 'package:mornye/screens/settings/lyrics_settings_page.dart';
 import 'package:mornye/screens/settings/metadata_settings_page.dart';
 import 'package:mornye/screens/settings/playback_settings_page.dart';
-import 'package:mornye/screens/settings/stremio_addon_page.dart';
+import 'package:mornye/screens/settings/eclipse_addon_page.dart';
 import 'package:mornye/utils/settings_search_catalog.dart';
 import 'package:mornye/services/app_remote_config_service.dart';
 import 'package:mornye/services/shell_navigation_service.dart';
@@ -362,20 +362,19 @@ class _SettingsTabState extends ConsumerState<SettingsTab> {
             pageBuilder: () => const MetadataSettingsPage(),
           ),
           _Destination(
-            icon: Icons.live_tv_outlined,
+            icon: Icons.music_note_outlined,
             iconColor: Colors.indigo,
-            title: 'Stremio add-on',
+            title: 'Eclipse add-on',
             subtitle: 'Stream your catalogue over the local network',
             keywords: const [
-              'stremio',
+              'eclipse',
               'addon',
               'lan',
               'server',
               'port',
               '8089',
-              'tv',
             ],
-            pageBuilder: () => const StremioAddonPage(),
+            pageBuilder: () => const EclipseAddonPage(),
             beta: true,
           ),
         ],
