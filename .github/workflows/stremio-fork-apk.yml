@@ -1,0 +1,123 @@
+name: Stremio add-on — build APK
+
+# Builds a Lite Android release APK for this fork and attaches it to the
+# release. The upstream Release workflow needs the Discord SDK passphrase and
+# the signing keystore, which a fork does not have; this one builds the
+# supported --lite variant, signed with the debug key, so the add-on can be
+# tried on a device.
+#
+# It runs on every push to main, and on demand from the Actions tab.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the APKs to"
+        required: false
+        default: "v5.3.1-stremio"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stremio-fork-apk
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    env:
+      MORNYE_DISCORD_SDK: "0"
+      RELEASE_TAG: ${{ inputs.tag || 'v5.3.1-stremio' }}
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost /usr/share/swift /usr/local/.ghcup
+          df -h
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Java
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: "temurin"
+          java-version: "25"
+
+      - name: Activate pinned Rust toolchain
+        working-directory: rust_backend
+        run: rustup show
+
+      - name: Install Rust binding generator dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
+
+      - name: Cache Android NDK
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /usr/local/lib/android/sdk/ndk/30.0.16248370
+          key: ndk-30.0.16248370
+
+      - name: Install Android SDK & NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "ndk;30.0.16248370" \
+            "platforms;android-37.0" \
+            "build-tools;37.0.0" \
+            "cmake;4.1.2"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> "$GITHUB_ENV"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version-file: .fvmrc
+          cache: true
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Prepare Flutter framework patch
+        run: dart scripts/prepare_flutter_sdk.dart
+
+      - name: Generate app icons
+        run: dart run flutter_launcher_icons
+
+      - name: Build Lite release APKs
+        run: |
+          bash scripts/build_android.sh --lite --target lib/main.dart
+          ls -la build/app/outputs/flutter-apk/
+
+      - name: Name the APKs for the release
+        run: |
+          set -euo pipefail
+          apk_dir=build/app/outputs/flutter-apk
+          version="${RELEASE_TAG#v}"
+          mkdir -p dist
+          cp "$apk_dir/app-arm64-v8a-release.apk" "dist/Mornye-$version-arm64-v8a.apk"
+          cp "$apk_dir/app-armeabi-v7a-release.apk" "dist/Mornye-$version-armeabi-v7a.apk"
+          cp "$apk_dir/app-release.apk" "dist/Mornye-$version-universal.apk"
+          sha256sum dist/*.apk | tee dist/SHA256SUMS.txt
+
+      - name: Attach the APKs to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/*.apk dist/SHA256SUMS.txt --clobber
+          else
+            echo "Release $RELEASE_TAG not found; keeping the APKs as a build artifact."
+          fi
+
+      - name: Keep the APKs as an artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mornye-lite-apks
+          path: dist/
+          retention-days: 14
