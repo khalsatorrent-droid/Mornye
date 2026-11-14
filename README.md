@@ -223,16 +223,16 @@
 
 ---
 
-## Stremio add-on
+## Eclipse add-on
 
-Mornye can serve its catalogue to [Stremio](https://www.stremio.com/) on your
-local network. Turn it on under **Settings → Stremio add-on**, then install
-`http://<your-ip>:8089/manifest.json` in Stremio. Stremio browses the same
-providers the app uses, lists every download source you have enabled, and plays
-tracks by downloading them into your library and streaming the file from there.
+Mornye can serve its catalogue to [Eclipse Music](https://eclipsemusic.app/) on
+your local network. Turn it on under **Settings → Eclipse add-on**, then add
+`http://<your-ip>:8089/manifest.json` as an Addon connection in Eclipse. Eclipse
+searches the same providers the app uses, and every track is downloaded into
+your library and streamed from there, so replays are instant.
 
-See [docs/stremio-addon.md](docs/stremio-addon.md) for setup, the catalogs it
-offers, the endpoints it serves and its limitations.
+See [docs/eclipse-addon.md](docs/eclipse-addon.md) for setup, the endpoints it
+serves and its limitations.
 
 ---
 

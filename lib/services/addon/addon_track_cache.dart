@@ -2,17 +2,17 @@ import 'package:mornye/models/track.dart';
 import 'package:mornye/services/platform_bridge.dart';
 import 'package:mornye/utils/logger.dart';
 
-final _log = AppLogger('StremioTracks');
+final _log = AppLogger('AddonTracks');
 
 /// Remembers the catalogue tracks this add-on has shown, so a stream request
 /// can name the track without a second provider round trip.
 ///
 /// A miss is not an error: the track is looked up from its metadata provider
 /// instead, which is why ids carry the provider and track id.
-class StremioTrackCache {
-  StremioTrackCache();
+class AddonTrackCache {
+  AddonTrackCache();
 
-  static final StremioTrackCache instance = StremioTrackCache();
+  static final AddonTrackCache instance = AddonTrackCache();
 
   static const int _maxEntries = 600;
 

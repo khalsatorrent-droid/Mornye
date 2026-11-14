@@ -6,19 +6,21 @@ import 'package:mornye/models/extension.dart';
 import 'package:mornye/models/track.dart';
 import 'package:mornye/providers/download_queue_provider.dart';
 import 'package:mornye/providers/extension_provider.dart';
+import 'package:mornye/providers/settings_provider.dart';
+import 'package:mornye/services/addon/addon_ids.dart';
+import 'package:mornye/services/addon/addon_settings.dart';
+import 'package:mornye/services/addon/addon_track_cache.dart';
 import 'package:mornye/services/library_database.dart';
 import 'package:mornye/services/platform_bridge.dart';
-import 'package:mornye/services/stremio/stremio_ids.dart';
-import 'package:mornye/services/stremio/stremio_track_cache.dart';
 import 'package:mornye/utils/logger.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
-final _log = AppLogger('StremioStreams');
+final _log = AppLogger('AddonPlayback');
 
-/// A playback request the add-on cannot serve, reported to Stremio as a 502.
-class StremioPlaybackException implements Exception {
-  const StremioPlaybackException(this.message);
+/// A playback request the add-on cannot serve, reported to Eclipse as an error.
+class AddonPlaybackException implements Exception {
+  const AddonPlaybackException(this.message);
 
   final String message;
 
@@ -26,182 +28,107 @@ class StremioPlaybackException implements Exception {
   String toString() => message;
 }
 
-/// Stream lists and playback for the Stremio add-on.
+/// Playback for the Eclipse add-on.
 ///
-/// Every stream is a download source the app already has: one entry per
-/// enabled download extension (and its quality options), plus the copy already
-/// in the library. Choosing one enqueues the normal download, and the file is
-/// served as it arrives, so playback starts before the download ends. The
-/// finished file stays in the library, so the next play is instant.
-class StremioStreamService {
-  StremioStreamService(this._ref);
+/// Eclipse asks for one URL per track, so the add-on picks the source: the
+/// copy in the library when there is one, otherwise the download source
+/// configured in Settings → Eclipse add-on (or the app's default service).
+/// The track is downloaded into the library and the file is served from
+/// there, so a replay is instant and needs no network.
+class AddonPlaybackService {
+  AddonPlaybackService(this._ref);
 
   /// How long a play request waits for the library download to finish when the
   /// partially written file could not be found.
   static const Duration downloadTimeout = Duration(minutes: 4);
 
-  static const int maxStreams = 24;
-
   static const String _stagingPrefix = '.mornye-download-';
 
   final Ref _ref;
 
-  Future<List<Map<String, dynamic>>> streams({
+  /// What Eclipse needs for `/stream/{id}`: a URL it can play, plus the format
+  /// when the file is already on disk and the answer is certain.
+  Future<Map<String, dynamic>> streamInfo({
     required String id,
     required String baseUrl,
   }) async {
-    final ref = StremioIds.parse(id);
-    if (ref == null) return const [];
-
-    if (ref.isLibrary) {
-      final row = await LibraryDatabase.instance.getById(ref.value);
-      if (row == null) return const [];
-      return [
-        _entry(
-          baseUrl: baseUrl,
-          id: id,
-          mode: 'lib',
-          service: '',
-          quality: '',
-          name: 'Mornye · Library',
-          detail: 'Already in your library · plays instantly',
-          bingeGroup: 'mornye-library',
-        ),
-      ];
+    final ref = AddonIds.parse(id);
+    if (ref == null) {
+      throw const AddonPlaybackException('Unknown track id');
     }
 
-    if (!ref.isTrack) {
-      // Albums, playlists and artists stream through their track list.
-      return const [];
-    }
-
-    final track = await StremioTrackCache.instance.resolve(
-      ref.source,
-      ref.value,
-    );
-    if (track == null) return const [];
-
-    final streams = <Map<String, dynamic>>[];
-
-    if (await _libraryFile(track) != null) {
-      streams.add(
-        _entry(
-          baseUrl: baseUrl,
-          id: id,
-          mode: 'lib',
-          service: '',
-          quality: '',
-          name: 'Mornye · Library',
-          detail: 'Already in your library · plays instantly',
-          bingeGroup: 'mornye-library',
-        ),
-      );
-    }
-
-    for (final extension in _downloadExtensions()) {
-      final qualities = extension.qualityOptions;
-      if (qualities.isEmpty) {
-        streams.add(
-          _entry(
-            baseUrl: baseUrl,
-            id: id,
-            mode: 'dl',
-            service: extension.id,
-            quality: '',
-            name: 'Mornye · ${extension.displayName}',
-            detail: '${extension.displayName} · downloads, then streams',
-            bingeGroup: 'mornye-${extension.id}',
-          ),
-        );
-      } else {
-        for (final quality in qualities) {
-          streams.add(
-            _entry(
-              baseUrl: baseUrl,
-              id: id,
-              mode: 'dl',
-              service: extension.id,
-              quality: quality.id,
-              name: 'Mornye · ${extension.displayName}',
-              detail:
-                  '${extension.displayName} · ${quality.label} · downloads, then streams',
-              bingeGroup: 'mornye-${extension.id}-${quality.id}',
-            ),
-          );
-        }
-      }
-      if (streams.length >= maxStreams) break;
-    }
-
-    return streams;
+    final file = await _readyFile(ref);
+    final url = '$baseUrl/play/${Uri.encodeComponent(id)}';
+    final format = file == null ? null : _formatOf(file.path);
+    return {
+      'url': url,
+      if (format != null) 'format': format,
+      'quality': file == null ? 'auto' : 'library',
+    };
   }
 
-  /// Starts (or finds) the download behind a `/play` request.
-  ///
-  /// Returns a handle whose [StremioPlayHandle.readyFile] is set when the file
-  /// is already on disk. Otherwise the caller serves the handle's partial file
-  /// while the download runs, or waits for [StremioPlayHandle.waitForFile].
-  Future<StremioPlayHandle> beginPlay({
-    required String id,
-    required String mode,
-    required String service,
-    required String quality,
-  }) async {
-    final ref = StremioIds.parse(id);
+  /// The file Eclipse should read for a `/play` request: the library copy when
+  /// there is one, otherwise a fresh download.
+  Future<AddonPlayHandle> beginPlay(String id) async {
+    final ref = AddonIds.parse(id);
     if (ref == null) {
-      throw const StremioPlaybackException('Unknown track id');
+      throw const AddonPlaybackException('Unknown track id');
     }
 
     if (ref.isLibrary) {
       final row = await LibraryDatabase.instance.getById(ref.value);
       final file = await _fileForPath((row?['filePath'] ?? '').toString());
       if (file == null) {
-        throw const StremioPlaybackException(
+        throw const AddonPlaybackException(
           'The library file for this track is missing',
         );
       }
-      return StremioPlayHandle.ready(this, file);
+      return AddonPlayHandle.ready(this, file);
     }
 
     if (!ref.isTrack) {
-      throw const StremioPlaybackException(
-        'Open a track from the album or playlist to play it',
+      throw const AddonPlaybackException(
+        'Open a track from the album, artist or playlist to play it',
       );
     }
 
-    final track = await StremioTrackCache.instance.resolve(
-      ref.source,
-      ref.value,
-    );
+    final track = await AddonTrackCache.instance.resolve(ref.source, ref.value);
     if (track == null) {
-      throw const StremioPlaybackException(
+      throw const AddonPlaybackException(
         'This track is no longer available from its provider',
       );
     }
 
     final existing = await _libraryFile(track);
-    if (existing != null) return StremioPlayHandle.ready(this, existing);
+    if (existing != null) return AddonPlayHandle.ready(this, existing);
 
-    if (mode == 'lib') {
-      throw const StremioPlaybackException(
-        'This track is not in your library any more',
-      );
-    }
-    if (service.trim().isEmpty) {
-      throw const StremioPlaybackException('No download source was requested');
-    }
-
-    return _enqueue(track, service.trim(), quality.trim());
+    return _enqueue(track);
   }
 
-  Future<StremioPlayHandle> _enqueue(
-    Track track,
-    String service,
-    String quality,
-  ) async {
+  /// The file when it is already on disk, for the fast `/stream` answer.
+  Future<File?> _readyFile(AddonIdRef ref) async {
+    if (ref.isLibrary) {
+      final row = await LibraryDatabase.instance.getById(ref.value);
+      return _fileForPath((row?['filePath'] ?? '').toString());
+    }
+    if (!ref.isTrack) return null;
+    final track = await AddonTrackCache.instance.resolve(ref.source, ref.value);
+    if (track == null) return null;
+    return _libraryFile(track);
+  }
+
+  Future<AddonPlayHandle> _enqueue(Track track) async {
+    final service = _resolveSource();
+    if (service.isEmpty) {
+      throw const AddonPlaybackException(
+        'No download source is available. Enable a download extension in '
+        'Mornye, then try again.',
+      );
+    }
+
     final queue = _ref.read(downloadQueueProvider);
     if (queue.isPaused) {
-      throw const StremioPlaybackException(
+      throw const AddonPlaybackException(
         'Downloads are paused in Mornye. Resume the queue, then try again.',
       );
     }
@@ -215,17 +142,24 @@ class StremioStreamService {
       // Reuse a download that is already queued or running for this track.
       // Its staging directory already exists, so it cannot be identified by
       // difference: wait for the finished file instead.
-      return StremioPlayHandle.queued(this, item.id, track, null);
+      return AddonPlayHandle.queued(this, item.id, track, null);
     }
 
     final knownStaging = await _stagingDirectories();
     _log.i('Queueing ${track.name} from $service');
-    final itemId = notifier.addToQueue(
-      track,
-      service,
-      qualityOverride: quality.isEmpty ? null : quality,
-    );
-    return StremioPlayHandle.queued(this, itemId, track, knownStaging);
+    final itemId = notifier.addToQueue(track, service);
+    return AddonPlayHandle.queued(this, itemId, track, knownStaging);
+  }
+
+  /// The download source chosen on the add-on page, else the app's default.
+  String _resolveSource() {
+    final settings = _ref.read(settingsProvider);
+    final extensionState = _ref.read(extensionProvider);
+    final chosen = _ref.read(addonSettingsProvider).source.trim();
+    final requested = chosen.isNotEmpty ? chosen : settings.defaultService;
+    // An empty request, or a source that was since disabled, resolves to the
+    // first enabled download provider.
+    return resolveEffectiveDownloadService(requested, extensionState);
   }
 
   // --- Queue state --------------------------------------------------------
@@ -349,49 +283,25 @@ class StremioStreamService {
     return null;
   }
 
-  // --- Sources ------------------------------------------------------------
-
-  List<Extension> _downloadExtensions() {
-    return _ref
-        .read(extensionProvider)
-        .extensions
-        .where(
-          (extension) => extension.enabled && extension.hasDownloadProvider,
-        )
-        .toList(growable: false);
-  }
-
-  Map<String, dynamic> _entry({
-    required String baseUrl,
-    required String id,
-    required String mode,
-    required String service,
-    required String quality,
-    required String name,
-    required String detail,
-    required String bingeGroup,
-  }) {
-    final query = <String, String>{
-      'm': mode,
-      if (service.isNotEmpty) 's': service,
-      if (quality.isNotEmpty) 'q': quality,
-    };
-    final suffix = query.entries
-        .map((entry) => '${entry.key}=${Uri.encodeQueryComponent(entry.value)}')
-        .join('&');
-    return {
-      'name': name,
-      'title': detail,
-      'url': '$baseUrl/play/${Uri.encodeComponent(id)}?$suffix',
-      'behaviorHints': {'bingeGroup': bingeGroup, 'notWebReady': false},
+  static String? _formatOf(String path) {
+    final dot = path.lastIndexOf('.');
+    if (dot == -1) return null;
+    final extension = path.substring(dot + 1).toLowerCase();
+    return switch (extension) {
+      'mp3' => 'mp3',
+      'flac' => 'flac',
+      'm4a' || 'mp4' || 'alac' => 'm4a',
+      'aac' => 'aac',
+      'ogg' || 'oga' || 'opus' => 'ogg',
+      _ => null,
     };
   }
 }
 
 /// One in-flight playback request: either a finished file, or a download the
 /// caller can follow while it writes.
-class StremioPlayHandle {
-  StremioPlayHandle._({
+class AddonPlayHandle {
+  AddonPlayHandle._({
     required this.service,
     this.readyFile,
     this.itemId,
@@ -399,22 +309,22 @@ class StremioPlayHandle {
     this.knownStaging,
   });
 
-  factory StremioPlayHandle.ready(StremioStreamService service, File file) =>
-      StremioPlayHandle._(service: service, readyFile: file);
+  factory AddonPlayHandle.ready(AddonPlaybackService service, File file) =>
+      AddonPlayHandle._(service: service, readyFile: file);
 
-  factory StremioPlayHandle.queued(
-    StremioStreamService service,
+  factory AddonPlayHandle.queued(
+    AddonPlaybackService service,
     String itemId,
     Track track,
     Set<String>? knownStaging,
-  ) => StremioPlayHandle._(
+  ) => AddonPlayHandle._(
     service: service,
     itemId: itemId,
     track: track,
     knownStaging: knownStaging,
   );
 
-  final StremioStreamService service;
+  final AddonPlaybackService service;
 
   /// Set when the audio is already on disk.
   final File? readyFile;
@@ -438,27 +348,25 @@ class StremioPlayHandle {
     if (readyFile != null) return readyFile!;
     final itemId = this.itemId;
     if (itemId == null) {
-      throw const StremioPlaybackException('Nothing to download');
+      throw const AddonPlaybackException('Nothing to download');
     }
-    final deadline = DateTime.now().add(StremioStreamService.downloadTimeout);
+    final deadline = DateTime.now().add(AddonPlaybackService.downloadTimeout);
     while (DateTime.now().isBefore(deadline)) {
       final file = await _poll();
       if (file != null) return file;
       await Future<void>.delayed(const Duration(milliseconds: 400));
     }
     _log.w('Timed out waiting for ${track?.name ?? itemId}');
-    throw const StremioPlaybackException(
+    throw const AddonPlaybackException(
       'The download did not finish in time. Check the queue in Mornye, then try again.',
     );
   }
 
-  /// Follows the download without blocking: returns the file to read next, or
-  /// null once the finished library file has been read to its end.
+  /// Follows the download without blocking: returns the finished file, or null
+  /// while it is still running.
   Future<File?> nextSource() async {
     if (_complete) return _finalFile;
-    final file = await _poll();
-    if (file != null) return file;
-    return null;
+    return _poll();
   }
 
   /// The partially written file, once the source starts writing one.
@@ -506,12 +414,12 @@ class StremioPlayHandle {
           return library;
         }
       }
-      throw StremioPlaybackException(
+      throw AddonPlaybackException(
         item.error ?? 'The source skipped this track',
       );
     }
     if (item.status == DownloadStatus.failed) {
-      throw StremioPlaybackException(item.error ?? 'The download failed');
+      throw AddonPlaybackException(item.error ?? 'The download failed');
     }
     return null;
   }
