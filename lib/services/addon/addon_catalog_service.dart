@@ -351,6 +351,7 @@ class AddonCatalogService {
       if (track.duration > 0) 'duration': track.duration,
       if (artwork != null) 'artworkURL': artwork,
       if ((track.isrc ?? '').trim().isNotEmpty) 'isrc': track.isrc!.trim(),
+      if (track.explicit == true) 'explicit': true,
     };
   }
 
